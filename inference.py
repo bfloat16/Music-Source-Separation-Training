@@ -28,7 +28,7 @@ def run_folder(model, args, config, device):
 
     instruments = config['training']['instruments']
 
-    with Progress() as progress:
+    with progress:
         task1 = progress.add_task("Total", total=len(all_mixtures_path))
         for path in all_mixtures_path:
             try:
@@ -43,7 +43,9 @@ def run_folder(model, args, config, device):
                 mix = np.stack([mix, mix], axis=-1)
 
             mixture = torch.tensor(mix.T, dtype=torch.float32).to(device)
-            res = demix_track(config, model, mixture, device)
+            res = demix_track(config, model, mixture, device, progress)
+
+            progress.update(task1, advance=1)
 
             filename = os.path.splitext(os.path.basename(path))[0]
             relative_path = os.path.relpath(path, args.input_folder)
@@ -56,8 +58,6 @@ def run_folder(model, args, config, device):
 
                 sf.write(vocal_output_file, res[instr].T, sr, subtype='PCM_16')
                 sf.write(instrumental_output_file, (mix - res[instr].T), sr, subtype='PCM_16')
-            
-            progress.update(task1, advance=1)
 
 def main():
     args = parse_args()
