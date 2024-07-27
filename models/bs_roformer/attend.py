@@ -1,18 +1,10 @@
 from functools import wraps
 from packaging import version
-from collections import namedtuple
 
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-
-from einops import rearrange, reduce
-
-# constants
-
-FlashAttentionConfig = namedtuple('FlashAttentionConfig', ['enable_flash', 'enable_math', 'enable_mem_efficient'])
-
-# helpers
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 def exists(val):
     return val is not None
@@ -33,15 +25,8 @@ def once(fn):
 
 print_once = once(print)
 
-# main class
-
 class Attend(nn.Module):
-    def __init__(
-        self,
-        dropout = 0.,
-        flash = False,
-        scale = None
-    ):
+    def __init__(self, dropout = 0., flash = False, scale = None):
         super().__init__()
         self.scale = scale
         self.dropout = dropout
@@ -52,7 +37,7 @@ class Attend(nn.Module):
 
         # determine efficient attention configs for cuda and cpu
 
-        self.cpu_config = FlashAttentionConfig(True, True, True)
+        self.cpu_config = [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]
         self.cuda_config = None
 
         if not torch.cuda.is_available() or not flash:
@@ -62,29 +47,24 @@ class Attend(nn.Module):
 
         if device_properties.major == 8 and device_properties.minor == 0:
             print_once('A100 GPU detected, using flash attention if input tensor is on cuda')
-            self.cuda_config = FlashAttentionConfig(True, False, False)
+            self.cuda_config = [SDPBackend.FLASH_ATTENTION]
         else:
             print_once('Non-A100 GPU detected, using math or mem efficient attention if input tensor is on cuda')
-            self.cuda_config = FlashAttentionConfig(False, True, True)
+            self.cuda_config = [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]
 
     def flash_attn(self, q, k, v):
-        _, heads, q_len, _, k_len, is_cuda, device = *q.shape, k.shape[-2], q.is_cuda, q.device
-
         if exists(self.scale):
             default_scale = q.shape[-1] ** -0.5
             q = q * (self.scale / default_scale)
 
         # Check if there is a compatible device for flash attention
 
-        config = self.cuda_config if is_cuda else self.cpu_config
+        backends = self.cuda_config if q.is_cuda else self.cpu_config
 
         # pytorch 2.0 flash attn: q, k, v, mask, dropout, softmax_scale
 
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p = self.dropout if self.training else 0.
-            )
+        with sdpa_kernel(backends):
+            out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
 
         return out
 
@@ -96,8 +76,6 @@ class Attend(nn.Module):
         n, i, j - sequence length (base sequence length, source, target)
         d - feature dimension
         """
-
-        q_len, k_len, device = q.shape[-2], k.shape[-2], q.device
 
         scale = default(self.scale, q.shape[-1] ** -0.5)
 
