@@ -2,19 +2,90 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
+from einops import rearrange, pack, unpack
+from functools import partial
+
+def exists(val):
+    return val is not None
+
+def default(v, d):
+    return v if exists(v) else d
+
+def pack_one(t, pattern):
+    return pack([t], pattern)
+
+def unpack_one(t, ps, pattern):
+    return unpack(t, ps, pattern)[0]
 
 def get_model_from_config(model_type, config_path):
+    global audioprocesser
+    global audio_channels
     with open(config_path) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
     if model_type == 'bs_roformer':
         from models.bs_roformer import BSRoformer
-        model = BSRoformer(**config['model'])
+        audio_channels = 2 if config['audio']['stereo'] else 1
+        model = BSRoformer(**config['model'], audio_channels=audio_channels)
+        audioprocesser = AudioProcessor(
+            None,
+            config['audio']['stft_n_fft'],
+            config['audio']['stft_hop_length'],
+            config['audio']['stft_win_length'],
+            config['audio']['stft_normalized']
+            )
     else:
-        print('Unknown model: {}'.format(model_type))
-        model = None
+        raise ValueError(f"Unknown model type: {model_type}")
     return model, config
 
+class AudioProcessor:
+    def __init__(self, stft_window_fn, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized):
+        global audio_channels
+        self.audio_channels = audio_channels
+        self.stft_window_fn = stft_window_fn
+
+        self.stft_kwargs = dict(
+            n_fft=stft_n_fft,
+            hop_length=stft_hop_length,
+            win_length=stft_win_length,
+            normalized=stft_normalized,
+        )
+
+        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
+
+    def pre_stft(self, raw_audio):
+        device = raw_audio.device
+
+        if raw_audio.ndim == 2:
+            raw_audio = rearrange(raw_audio, 'b t -> b 1 t')
+
+        # STFT
+        raw_audio, batch_audio_channel_packed_shape = pack_one(raw_audio, '* t')
+        stft_window = self.stft_window_fn(device=device)
+        stft_repr = torch.stft(raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True)
+        stft_repr = torch.view_as_real(stft_repr)
+        stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, '* f t c')
+        stft_repr = rearrange(stft_repr, 'b s f t c -> b (f s) t c')
+
+        return stft_repr
+
+    def pre_istft(self, stft_repr, mask, num_stems):
+        stft_repr = rearrange(stft_repr, 'b f t c -> b 1 f t c')
+        stft_repr = torch.view_as_complex(stft_repr)
+        mask = torch.view_as_complex(mask)
+        stft_repr = stft_repr * mask
+
+        stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
+        stft_window = self.stft_window_fn(device=stft_repr.device)
+        recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False)
+        recon_audio = rearrange(recon_audio, '(b n s) t -> b n s t', s=self.audio_channels, n=num_stems)
+
+        if num_stems == 1:
+            recon_audio = rearrange(recon_audio, 'b 1 s t -> b s t')
+
+        return recon_audio
+
 def demix_track(config, model, mix, device, progress):
+    global audioprocesser
     C = config['audio']['chunk_size']
     N = config['inference']['num_overlap']
     fade_size = C // 10
@@ -63,7 +134,10 @@ def demix_track(config, model, mix, device, progress):
 
                     if len(batch_data) >= batch_size or (i >= mix.shape[1]):
                         arr = torch.stack(batch_data, dim=0)
-                        x = model(arr)
+                        stft_repr = audioprocesser.pre_stft(arr)
+                        print(stft_repr.shape)
+                        mask, num_stems = model(stft_repr)
+                        audio = audioprocesser.pre_istft(stft_repr, mask, num_stems)
 
                         window = window_middle
                         if i - step == 0:  # First audio chunk, no fadein
@@ -73,7 +147,7 @@ def demix_track(config, model, mix, device, progress):
 
                         for j in range(len(batch_locations)):
                             start, l = batch_locations[j]
-                            result[..., start:start+l] += x[j][..., :l].cpu() * window[..., :l]
+                            result[..., start:start+l] += audio[j][..., :l].cpu() * window[..., :l]
                             counter[..., start:start+l] += window[..., :l]
 
                         batch_data = []
@@ -88,56 +162,3 @@ def demix_track(config, model, mix, device, progress):
                     estimated_sources = estimated_sources[..., border:-border]
 
         return {k: v for k, v in zip(config['training']['instruments'], estimated_sources)}
-
-def demix_track_demucs(config, model, mix, device):
-    S = len(config.training.instruments)
-    C = config.training.samplerate * config.training.segment
-    N = config.inference.num_overlap
-    batch_size = config.inference.batch_size
-    step = C // N
-
-    with torch.cuda.amp.autocast(enabled=config.training.use_amp):
-        with torch.inference_mode():
-            req_shape = (S, ) + tuple(mix.shape)
-            result = torch.zeros(req_shape, dtype=torch.float32)
-            counter = torch.zeros(req_shape, dtype=torch.float32)
-            i = 0
-            batch_data = []
-            batch_locations = []
-            while i < mix.shape[1]:
-                # print(i, i + C, mix.shape[1])
-                part = mix[:, i:i + C].to(device)
-                length = part.shape[-1]
-                if length < C:
-                    part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode='constant', value=0)
-                batch_data.append(part)
-                batch_locations.append((i, length))
-                i += step
-
-                if len(batch_data) >= batch_size or (i >= mix.shape[1]):
-                    arr = torch.stack(batch_data, dim=0)
-                    x = model(arr)
-                    for j in range(len(batch_locations)):
-                        start, l = batch_locations[j]
-                        result[..., start:start+l] += x[j][..., :l].cpu()
-                        counter[..., start:start+l] += 1.
-                    batch_data = []
-                    batch_locations = []
-
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
-            np.nan_to_num(estimated_sources, copy=False, nan=0.0)
-
-    if S > 1:
-        return {k: v for k, v in zip(config.training.instruments, estimated_sources)}
-    else:
-        return estimated_sources
-
-def sdr(references, estimates):
-    # compute SDR for one song
-    delta = 1e-7  # avoid numerical errors
-    num = np.sum(np.square(references), axis=(1, 2))
-    den = np.sum(np.square(references - estimates), axis=(1, 2))
-    num += delta
-    den += delta
-    return 10 * np.log10(num / den)

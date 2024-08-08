@@ -1,5 +1,3 @@
-from functools import partial
-
 import torch
 from torch import nn
 from torch.nn import Module, ModuleList
@@ -203,7 +201,6 @@ class BSRoformer(Module):
             dim,
             *,
             depth,
-            stereo=False,
             num_stems=1,
             time_transformer_depth=2,
             freq_transformer_depth=2,
@@ -214,17 +211,11 @@ class BSRoformer(Module):
             attn_dropout=0.,
             ff_dropout=0.,
             flash_attn=True,
-            stft_n_fft=2048,
-            stft_hop_length=512,
-            stft_win_length=2048,
-            stft_normalized=False,
-            stft_window_fn=None,
-            mask_estimator_depth=2
+            mask_estimator_depth=2,
+            audio_channels=2
     ):
         super().__init__()
-
-        self.stereo = stereo
-        self.audio_channels = 2 if stereo else 1
+        self.audio_channels = audio_channels
         self.num_stems = num_stems
 
         self.layers = ModuleList([])
@@ -252,15 +243,6 @@ class BSRoformer(Module):
 
         self.final_norm = RMSNorm(dim)
 
-        self.stft_kwargs = dict(
-            n_fft=stft_n_fft,
-            hop_length=stft_hop_length,
-            win_length=stft_win_length,
-            normalized=stft_normalized,
-        )
-
-        self.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
-
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in freqs_per_bands)
 
         self.band_split = BandSplit(dim=dim, dim_inputs=freqs_per_bands_with_complex)
@@ -272,7 +254,7 @@ class BSRoformer(Module):
 
             self.mask_estimators.append(mask_estimator)
 
-    def forward(self, raw_audio):
+    def forward(self, stft_repr):
         """
         einops
 
@@ -284,23 +266,6 @@ class BSRoformer(Module):
         c - complex (2)
         d - feature dimension
         """
-
-        device = raw_audio.device
-
-        if raw_audio.ndim == 2:
-            raw_audio = rearrange(raw_audio, 'b t -> b 1 t')
-
-        channels = raw_audio.shape[1]
-        assert (not self.stereo and channels == 1) or (self.stereo and channels == 2), 'stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)'
-
-        # STFT
-        raw_audio, batch_audio_channel_packed_shape = pack_one(raw_audio, '* t')
-        stft_window = self.stft_window_fn(device=device)
-        stft_repr = torch.stft(raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True)
-        stft_repr = torch.view_as_real(stft_repr)
-        stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, '* f t c')
-        stft_repr = rearrange(stft_repr, 'b s f t c -> b (f s) t c')
-
         # Inference
         x = rearrange(stft_repr, 'b f t c -> b t (f c)')
         x = self.band_split(x)
@@ -330,22 +295,11 @@ class BSRoformer(Module):
 
         x = self.final_norm(x)
 
-        num_stems = len(self.mask_estimators)
+        num_stems = torch.tensor(len(self.mask_estimators))
 
         mask = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
         mask = rearrange(mask, 'b n t (f c) -> b n f t c', c=2)
 
-        # iSTFT
-        stft_repr = rearrange(stft_repr, 'b f t c -> b 1 f t c')
-        stft_repr = torch.view_as_complex(stft_repr)
-        mask = torch.view_as_complex(mask)
-        stft_repr = stft_repr * mask
+        print(mask.shape, num_stems.shape)
 
-        stft_repr = rearrange(stft_repr, 'b n (f s) t -> (b n s) f t', s=self.audio_channels)
-        recon_audio = torch.istft(stft_repr, **self.stft_kwargs, window=stft_window, return_complex=False)
-        recon_audio = rearrange(recon_audio, '(b n s) t -> b n s t', s=self.audio_channels, n=num_stems)
-
-        if num_stems == 1:
-            recon_audio = rearrange(recon_audio, 'b 1 s t -> b s t')
-
-        return recon_audio
+        return mask, num_stems

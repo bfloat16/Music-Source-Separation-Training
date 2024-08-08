@@ -78,7 +78,6 @@ class Attend(nn.Module):
         """
 
         scale = default(self.scale, q.shape[-1] ** -0.5)
-
         if self.flash:
             return self.flash_attn(q, k, v)
 

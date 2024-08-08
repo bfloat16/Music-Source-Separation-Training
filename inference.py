@@ -13,8 +13,8 @@ progress = Progress(TextColumn("Running: "), BarColumn(), "[progress.percentage]
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", default='bs_roformer', type=str, help="mel_band_roformer, bs_roformer")
-    parser.add_argument("--config_path", default='ckpt/deverb_bs_roformer_8_256dim_8depth.yaml', type=str, help="path to config file")
-    parser.add_argument("--start_check_point", default='ckpt/deverb_bs_roformer_8_256dim_8depth.ckpt', type=str, help="Initial checkpoint to valid weights")
+    parser.add_argument("--config_path", default='ckpt/model_bs_roformer_ep_317_sdr_12.9755.yaml', type=str, help="path to config file")
+    parser.add_argument("--start_check_point", default='ckpt/model_bs_roformer_ep_317_sdr_12.9755.ckpt', type=str, help="Initial checkpoint to valid weights")
     parser.add_argument("--input_folder", default='input', type=str, help="folder with mixtures to process")
     parser.add_argument("--store_dir", default='output', type=str, help="path to store results as wav file")
     parser.add_argument("--device_ids", nargs='+', type=int, default=0, help='list of gpu ids')
