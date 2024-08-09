@@ -1,3 +1,13 @@
-# Music Source Separation Universal Training Inference
+# Music Source Separation Inference
 
-Clean version, may support mdx-net and trt.
+- [ ] **BS RoFormer**
+  - [x] Cleaning up the code
+  - [x] Onnx export
+  - [x] TensorRT inference
+  - [ ] TensorRT performance optimization
+
+- [ ] **Mel-Band RoFormer**
+  - [x] Cleaning up the code
+  - [ ] Onnx export
+  - [ ] TensorRT inference
+  - [ ] TensorRT performance optimization
