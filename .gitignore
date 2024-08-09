@@ -3,3 +3,5 @@ __pycache__
 **/*.ckpt
 **/*.wav
 **/*.onnx
+**/*.engine
+**/*.sig

@@ -12,8 +12,6 @@ parser.add_argument("--store_dir", default='./output', type=str, help="path to s
 parser.add_argument("--device_ids", nargs='+', type=int, default=[0], help='list of gpu ids')
 args = parser.parse_args()
 
-torch.backends.cudnn.benchmark = True
-
 # 加载模型和配置
 model, config = get_model_from_config(args.model_type, args.config_path)
 
@@ -36,7 +34,7 @@ torch.onnx.export(model,
                   onnx_export_path,
                   opset_version=20,
                   input_names=['stft_repr'],
-                  output_names=['mask', 'num_stems']
+                  output_names=['mask']
                   )
 
 print(f"Model has been converted to ONNX and saved at {onnx_export_path}")
