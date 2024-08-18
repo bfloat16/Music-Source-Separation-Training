@@ -1,1 +1,1 @@
-from models.bs_roformer.bs_roformer import BSRoformer
+from models.roformer.bs_roformer import BSRoformer

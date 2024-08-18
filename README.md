@@ -11,3 +11,8 @@
   - [ ] Onnx export
   - [ ] TensorRT inference
   - [ ] TensorRT performance optimization
+
+```
+pip3 install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+pip3 install -r requirements.txt
+```

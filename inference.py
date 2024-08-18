@@ -6,15 +6,14 @@ import argparse
 import numpy as np
 import soundfile as sf
 import torch.nn as nn
-from utils import demix_track, demix_track_trt, get_model_from_config, get_model_from_trt
+from utils import demix_track, demix_track_trt, get_model
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn
 progress = Progress(TextColumn("Running: "), BarColumn(), "[progress.percentage]{task.percentage:>3.1f}%", "•", MofNCompleteColumn(), "•", TimeElapsedColumn(), "|", TimeRemainingColumn())
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_type", default='bs_roformer', type=str, help="mel_band_roformer, bs_roformer")
-    parser.add_argument("--config_path", default='ckpt/model_bs_roformer_ep_317_sdr_12.9755.yaml', type=str, help="path to config file")
-    parser.add_argument("--start_check_point", default='ckpt/model_bs_roformer_ep_317_sdr_12.9755.ckpt', type=str, help="Initial checkpoint to valid weights")
+    parser.add_argument("--config_path", default='ckpt/karaoke_mel_band_roformer.yaml', type=str, help="path to config file")
+    parser.add_argument("--start_check_point", default='ckpt/karaoke_mel_band_roformer.ckpt', type=str, help="Initial checkpoint to valid weights")
     parser.add_argument("--onnx", default='bsr.onnx', type=str, help="path to trt model")
     parser.add_argument("--input_folder", default='input', type=str, help="folder with mixtures to process")
     parser.add_argument("--store_dir", default='output', type=str, help="path to store results as wav file")
@@ -100,7 +99,7 @@ def run_folder_trt(model, args, config, device):
 def main():
     args = parse_args()
     torch.backends.cudnn.benchmark = True
-    model, config = get_model_from_config(args.model_type, args.config_path)
+    model, config = get_model(args.config_path)
     if args.start_check_point != '':
         print('Start from checkpoint: {}'.format(args.start_check_point))
         state_dict = torch.load(args.start_check_point, weights_only=True)
@@ -121,11 +120,12 @@ def main():
         model = model.to(device)
 
     run_folder(model, args, config, device)
-
+'''
 def main_trt():
     args = parse_args()
     engine, config = get_model_from_trt(args.model_type, args.config_path, args.onnx)
     run_folder_trt(engine, args, config, 'cuda')
+'''
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,5 @@ soundfile
 pyyaml
 ml_collections
 omegaconf
-beartype
 rotary_embedding_torch
 rich
